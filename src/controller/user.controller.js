@@ -167,3 +167,54 @@ export async function getOutgoingFriendReqs(req, res) {
     res.status(500).json({ message: "Internal server error" });
   }
 }
+
+// ============ PROFILE PICTURE FUNCTIONS ============
+
+// ✅ Upload Profile Picture
+export async function uploadProfilePicture(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    const imageUrl = req.file.path;
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { profilePicture: imageUrl },
+      { new: true }
+    ).select("-password");
+
+    res.json({ 
+      success: true, 
+      profilePicture: user.profilePicture,
+      message: "Profile picture updated successfully" 
+    });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ message: "Failed to upload image" });
+  }
+}
+
+// ✅ Generate Random Avatar
+export async function generateRandomAvatar(req, res) {
+  try {
+    const idx = Math.floor(Math.random() * 100) + 1;
+    const randomAvatar = `https://avatar.iran.liara.run/public/${idx}.png`;
+    
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { profilePicture: randomAvatar },
+      { new: true }
+    ).select("-password");
+
+    res.json({ 
+      success: true, 
+      profilePicture: user.profilePicture,
+      message: "Random avatar generated" 
+    });
+  } catch (error) {
+    console.error("Random avatar error:", error);
+    res.status(500).json({ message: "Failed to generate avatar" });
+  }
+}

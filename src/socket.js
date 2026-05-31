@@ -1,3 +1,4 @@
+// backend/socket.js
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import User from "./models/User.js";
@@ -70,103 +71,65 @@ export const initializeSocket = (server) => {
       }
     });
 
-    // ============ GROUP CALL INVITATION ============
-    // User initiates a group call
-    // socket.on("start_group_call", ({ groupId, callerId, callerName }) => {
-    //   console.log(`📞 ${callerName} started a group call in group: ${groupId}`);
+    // ============ GROUP CALL (8-PERSON SUPPORT) ============
+    
+    socket.on("join_group_call", ({ groupId, userId, name }) => {
+      console.log(`🎥 ${name} JOINED call: ${groupId}`);
+      socket.join(`call:${groupId}`);
+      socket.callData = { groupId, userId, name };
       
-    //   // Notify ALL members in the group room about the incoming call
-    //   socket.to(`group:${groupId}`).emit("incoming_group_call", {
-    //     groupId,
-    //     callerId,
-    //     callerName,
-    //     callType: "group"
-    //   });
+      // Get ALL existing participants
+      const room = io.sockets.adapter.rooms.get(`call:${groupId}`);
+      const existingParticipants = [];
       
-    //   // Also join the caller to the call room
-    //   socket.join(`call:${groupId}`);
-    // });
-
-
-// Add to backend/socket.js inside io.on("connection", (socket) => { ... })
-
-// Group call started notification
-socket.on("group_call_started", ({ groupId, callLink, callerName }) => {
-  console.log(`📞 ${callerName} started a group call in ${groupId}`);
-  socket.to(`group:${groupId}`).emit("new_group_message", {
-    _id: Date.now(),
-    text: `🔴 **Group Call Started!** \n\nJoin here: ${callLink}`,
-    sender: { _id: socket.user._id, fullName: callerName },
-    createdAt: new Date()
-  });
-});
-
-// Join group call
-socket.on("join_group_call", ({ groupId, userId, name }) => {
-  console.log(`🎥 ${name} joined call: ${groupId}`);
-  socket.join(`call:${groupId}`);
-  socket.to(`call:${groupId}`).emit("participant_joined", { userId, name });
-});
-
-// Leave group call
-socket.on("leave_group_call", ({ groupId, userId }) => {
-  console.log(`🎥 User left call: ${groupId}`);
-  socket.leave(`call:${groupId}`);
-  socket.to(`call:${groupId}`).emit("participant_left", userId);
-});
-
-
-    // // User joins the group call
-    // socket.on("join_group_call", ({ groupId, userId, name }) => {
-    //   console.log(`🎥 ${name} joined group call: ${groupId}`);
-    //   socket.join(`call:${groupId}`);
+      if (room) {
+        for (const socketId of room) {
+          const participantSocket = io.sockets.sockets.get(socketId);
+          if (participantSocket && participantSocket.callData && participantSocket.callData.userId !== userId) {
+            existingParticipants.push({
+              userId: participantSocket.callData.userId,
+              name: participantSocket.callData.name
+            });
+          }
+        }
+      }
       
-    //   socket.callGroupId = groupId;
-    //   socket.callUserId = userId;
-    //   socket.callName = name;
+      // Send existing participants to new user
+      if (existingParticipants.length > 0) {
+        socket.emit("existing_participants", existingParticipants);
+        console.log(`📋 Sent ${existingParticipants.length} existing participants to ${name}`);
+      }
       
-    //   // Get all existing participants in the call
-    //   const room = io.sockets.adapter.rooms.get(`call:${groupId}`);
-    //   const existingParticipants = [];
+      // Notify others about new user
+      socket.to(`call:${groupId}`).emit("user_joined", { userId, name });
       
-    //   if (room) {
-    //     for (const socketId of room) {
-    //       const participantSocket = io.sockets.sockets.get(socketId);
-    //       if (participantSocket && participantSocket.callUserId !== userId) {
-    //         existingParticipants.push({
-    //           userId: participantSocket.callUserId,
-    //           name: participantSocket.callName,
-    //           socketId: socketId
-    //         });
-    //       }
-    //     }
-    //   }
+      // Update participant count
+      const updatedRoom = io.sockets.adapter.rooms.get(`call:${groupId}`);
+      const participantCount = updatedRoom ? updatedRoom.size : 1;
+      io.to(`call:${groupId}`).emit("participant_count", participantCount);
       
-    //   // Notify others about new participant
-    //   socket.to(`call:${groupId}`).emit("participant_joined", { userId, name });
-      
-    //   // Send existing participants to the new joiner
-    //   if (existingParticipants.length > 0) {
-    //     socket.emit("existing_participants", existingParticipants);
-    //   }
-    // });
-
-    socket.on("leave_group_call", ({ groupId, userId }) => {
-      console.log(`🎥 User ${userId} left group call: ${groupId}`);
-      socket.leave(`call:${groupId}`);
-      socket.to(`call:${groupId}`).emit("participant_left", userId);
-      delete socket.callGroupId;
-      delete socket.callUserId;
-      delete socket.callName;
+      console.log(`📊 Call ${groupId} now has ${participantCount} participants`);
     });
 
-    // WebRTC signaling
+    socket.on("leave_group_call", ({ groupId, userId }) => {
+      console.log(`🎥 User ${userId} LEFT call: ${groupId}`);
+      socket.leave(`call:${groupId}`);
+      socket.to(`call:${groupId}`).emit("user_left", userId);
+      
+      const room = io.sockets.adapter.rooms.get(`call:${groupId}`);
+      const participantCount = room ? room.size : 0;
+      io.to(`call:${groupId}`).emit("participant_count", participantCount);
+      
+      delete socket.callData;
+    });
+
+    // WebRTC Signaling
     socket.on("offer", ({ to, offer }) => {
       const targetSocketId = userSocketMap.get(to);
       if (targetSocketId) {
         io.to(targetSocketId).emit("offer", { 
-          from: socket.user._id, 
-          fromName: socket.user.fullName,
+          from: socket.callData?.userId || socket.user._id,
+          fromName: socket.callData?.name || socket.user.fullName,
           offer 
         });
       }
@@ -176,23 +139,26 @@ socket.on("leave_group_call", ({ groupId, userId }) => {
       const targetSocketId = userSocketMap.get(to);
       if (targetSocketId) {
         io.to(targetSocketId).emit("answer", { 
-          from: socket.user._id, 
+          from: socket.callData?.userId || socket.user._id,
           answer 
         });
       }
     });
 
-    socket.on("ice_candidate_group", ({ to, candidate }) => {
+    socket.on("ice-candidate", ({ to, candidate }) => {
       const targetSocketId = userSocketMap.get(to);
       if (targetSocketId) {
-        io.to(targetSocketId).emit("ice_candidate_group", { 
-          from: socket.user._id, 
+        io.to(targetSocketId).emit("ice-candidate", { 
+          from: socket.callData?.userId || socket.user._id,
           candidate 
         });
       }
     });
 
     socket.on("disconnect", () => {
+      if (socket.callData) {
+        socket.to(`call:${socket.callData.groupId}`).emit("user_left", socket.callData.userId);
+      }
       userSocketMap.delete(userId);
       socket.broadcast.emit("user_offline", userId);
       console.log(`🔴 User disconnected: ${userName} (${userId})`);
